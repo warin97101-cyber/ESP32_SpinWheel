@@ -1,0 +1,182 @@
+// ---------------------------------------------------------------- //
+// PROJECT: Spin-the-Wheel (Final Fixed by P'Nano)                  //
+// AUTHOR: Achira x Nano                                            //
+// ---------------------------------------------------------------- //
+
+#include <Adafruit_NeoPixel.h>
+#include <LiquidCrystal_I2C.h>
+
+// --- ส่วนที่ 1: ตั้งค่าขาอุปกรณ์ (Wiring Config) ---
+// ห้ามเปลี่ยนเลข ถ้าไม่ได้ย้ายสายไฟ!
+#define PIN_NEOPIXEL 13  // วงล้อไฟ ต่อขา 13
+#define NUM_LEDS     16  // จำนวนดวงไฟในวงล้อ (แก้เป็น 24 ถ้าใช้วงใหญ่)
+
+// ปุ่มกด (ต่อขาซ้ายบนเข้าเลขนี้, ขาขวาล่างลง GND)
+#define PIN_START    12  // ปุ่มเริ่ม
+#define PIN_BTN_A    14  // ปุ่มตอบ A
+#define PIN_BTN_B    27  // ปุ่มตอบ B
+#define PIN_BTN_C    26  // ปุ่มตอบ C
+#define PIN_BTN_D    25  // ปุ่มตอบ D
+
+// --- ส่วนที่ 2: ตั้งค่าระบบ ---
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+LiquidCrystal_I2C lcd(0x27, 16, 2); // ถ้าจอไม่ติด ให้ลองแก้ 0x27 เป็น 0x3F
+
+// ตัวแปรเก็บสถานะ
+int currentLED = 0;
+int gameState = 0; // 0=หน้าแรก, 1=กำลังหมุน, 2=รอตอบ, 3=โชว์ผล
+int selectedChoice = -1; // เก็บค่าสี/ข้อที่สุ่มได้ (0-3)
+
+// --- ส่วนที่ 3: คลังข้อสอบ (แก้โจทย์ตรงนี้) ---
+struct Question {
+  String line1; // บรรทัดบน
+  String line2; // บรรทัดล่าง
+  char ans;     // คำตอบที่ถูก
+};
+
+// มี 4 ข้อ (เรียงตามสี: 0=แดง, 1=เขียว, 2=น้ำเงิน, 3=เหลือง)
+Question qList[4] = {
+  {"Ohm Law: V=?",   "A:IR B:I/R C:P/I", 'A'}, // ข้อที่ 1 (สีแดง)
+  {"ESP32 has?",     "A:Wifi B:5G C:4G", 'A'}, // ข้อที่ 2 (สีเขียว)
+  {"Binary of 5?",   "A:10 B:101 C:111", 'B'}, // ข้อที่ 3 (สีน้ำเงิน)
+  {"IoT stands for?","A:Net B:Web C:Int", 'C'}  // ข้อที่ 4 (สีเหลือง)
+};
+
+void setup() {
+  Serial.begin(115200);
+
+  // ตั้งค่าปุ่มกด (แบบไม่ต้องใช้ตัวต้านทานเพิ่ม)
+  pinMode(PIN_START, INPUT_PULLUP);
+  pinMode(PIN_BTN_A, INPUT_PULLUP);
+  pinMode(PIN_BTN_B, INPUT_PULLUP);
+  pinMode(PIN_BTN_C, INPUT_PULLUP);
+  pinMode(PIN_BTN_D, INPUT_PULLUP);
+
+  // เริ่มต้นจอและไฟ
+  strip.begin();
+  strip.show(); // ปิดไฟก่อน
+  lcd.init();
+  lcd.backlight();
+  
+  // หน้าจอตอนเปิดเครื่อง
+  showIdleScreen();
+}
+
+void loop() {
+  // --- สถานะ 0: หน้าแรก รอคนกดปุ่ม Start ---
+  if (gameState == 0) {
+    if (digitalRead(PIN_START) == LOW) { // ถ้ากดปุ่ม Start
+      spinWheel(); // ไปสั่งหมุนวงล้อ
+    }
+  }
+  
+  // --- สถานะ 2: รอคนกดปุ่มตอบ (แยกออกมาเพื่อไม่ให้จอกะพริบ) ---
+  else if (gameState == 2) {
+    char userAns = ' '; // ตัวแปรฝากคำตอบ
+    
+    // เช็คว่ากดปุ่มไหน
+    if (digitalRead(PIN_BTN_A) == LOW) userAns = 'A';
+    else if (digitalRead(PIN_BTN_B) == LOW) userAns = 'B';
+    else if (digitalRead(PIN_BTN_C) == LOW) userAns = 'C';
+    else if (digitalRead(PIN_BTN_D) == LOW) userAns = 'D';
+
+    // ถ้ามีการกดปุ่ม (userAns ไม่ว่างเปล่า)
+    if (userAns != ' ') {
+      checkAns(userAns); // ไปตรวจคำตอบ
+      delay(300); // หน่วงเวลานิดนึงกันปุ่มเบิ้ล
+    }
+  }
+}
+
+// --- ฟังก์ชั่นเสริม (Tools) ---
+
+void showIdleScreen() {
+  gameState = 0;
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Ready to Start");
+  lcd.setCursor(0, 1); lcd.print("Press Red Btn!");
+  colorWipe(strip.Color(0,0,0), 10); // ปิดไฟวงล้อ
+}
+
+void spinWheel() {
+  gameState = 1;
+  lcd.clear(); 
+  lcd.setCursor(0, 0); lcd.print("Spinning...");
+  
+  int spinTime = random(20, 50); // สุ่มจำนวนรอบที่จะหมุน
+  
+  // ลูปหมุนไฟ
+  for(int i=0; i<spinTime; i++) {
+    strip.clear();
+    
+    // สุ่มสีไฟระหว่างหมุน (ตามที่ขอมา!)
+    uint32_t randomColor = strip.Color(random(0,255), random(0,255), random(0,255));
+    strip.setPixelColor(currentLED, randomColor);
+    strip.show();
+    
+    currentLED = (currentLED + 1) % NUM_LEDS; // ขยับไฟไปดวงถัดไป
+    delay(50 + (i*2)); // ยิ่งหมุนยิ่งช้าลง (หน่วงเวลาเพิ่มขึ้นเรื่อยๆ)
+  }
+  
+  // คำนวณว่าตกที่สีอะไร/ข้อไหน (สมมติ 4 ดวง = 1 ข้อ)
+  // สูตรนี้สำหรับวงล้อ 16 ดวง -> ทุกๆ 4 ดวงจะเป็นข้อนึง
+  selectedChoice = (currentLED / (NUM_LEDS/4)) % 4; 
+  
+  // เอฟเฟกต์กะพริบตอนหยุด
+  flashSelectedColor();
+  
+  // ไปแสดงโจทย์
+  showQuestion();
+}
+
+void flashSelectedColor() {
+  uint32_t color;
+  // เลือกสีตามข้อที่ได้
+  if(selectedChoice == 0) color = strip.Color(255, 0, 0);      // แดง
+  else if(selectedChoice == 1) color = strip.Color(0, 255, 0); // เขียว
+  else if(selectedChoice == 2) color = strip.Color(0, 0, 255); // น้ำเงิน
+  else color = strip.Color(255, 255, 0);                       // เหลือง
+
+  // กะพริบ 3 ครั้ง
+  for(int k=0; k<3; k++){
+    strip.fill(color); strip.show(); delay(200);
+    strip.clear(); strip.show(); delay(200);
+  }
+}
+
+void showQuestion() {
+  gameState = 2; // เข้าสู่โหมดรอตอบ
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print(qList[selectedChoice].line1);
+  lcd.setCursor(0, 1); lcd.print(qList[selectedChoice].line2);
+}
+
+void checkAns(char ans) {
+  gameState = 3; // โหมดโชว์ผล
+  lcd.clear();
+  
+  if (ans == qList[selectedChoice].ans) {
+    // ตอบถูก
+    lcd.setCursor(0, 0); lcd.print("CORRECT! (^^)");
+    lcd.setCursor(0, 1); lcd.print("You are Smart!");
+    colorWipe(strip.Color(0, 255, 0), 20); // วิ่งสีเขียวฉลอง
+  } else {
+    // ตอบผิด
+    lcd.setCursor(0, 0); lcd.print("WRONG! (T_T)");
+    lcd.setCursor(0, 1); lcd.print("Ans is: ");
+    lcd.print(qList[selectedChoice].ans);
+    colorWipe(strip.Color(255, 0, 0), 20); // วิ่งสีแดงเตือน
+  }
+  
+  delay(3000); // โชว์ผล 3 วิ
+  showIdleScreen(); // กลับไปหน้าแรก
+}
+
+// ฟังก์ชั่นช่วยวิ่งไฟ (Fill ทีละดวง)
+void colorWipe(uint32_t color, int wait) {
+  for(int i=0; i<strip.numPixels(); i++) {
+    strip.setPixelColor(i, color);
+    strip.show();
+    delay(wait);
+  }
+}
